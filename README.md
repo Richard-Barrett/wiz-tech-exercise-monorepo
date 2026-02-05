@@ -1,88 +1,88 @@
-# Wiz Technical Exercise v4 — Mono-Repo (AWS Reference Implementation)
+# Wiz Tech Exercise Monorepo
 
-This repository deploys the full environment required by the **Wiz Technical Exercise v4**:
-- Two-tier app: **containerized web app on Kubernetes** + **MongoDB on a VM**
-- Web app exposed publicly via **Kubernetes Ingress** backed by a **cloud load balancer**
-- **MongoDB is only reachable from the Kubernetes node network** (Security Group restriction)
-- VM runs a **1+ year outdated Linux** release, **SSH exposed publicly**, and has **overly permissive IAM**
-- MongoDB runs a **1+ year outdated version**, requires **DB authentication**
-- Daily automated backups uploaded to **public-readable + publicly listable** object storage
+This repository contains a small end-to-end deployment that provisions infrastructure on AWS and deploys an application to Kubernetes.
 
-> ⚠️ This environment is intentionally insecure per the exercise requirements. Deploy **only** in a disposable lab account.
+It includes:
+- **Infrastructure as Code** using **Terraform**
+- An **EKS** cluster and supporting AWS resources
+- A sample **application** container image and Kubernetes manifests
+- A **MongoDB** instance (configured via userdata)
+- Scripts and Makefile targets to build, deploy, and verify resources
 
-## Quick Start (local)
-
-### Prereqs
-- AWS account + credentials (or GitHub OIDC role)
-- `terraform` >= 1.6
-- `kubectl`, `helm`
-- `awscli`
-
-### 1) Configure Terraform variables
-Copy the example file and edit it:
-
-```bash
-cd infra/terraform
-cp terraform.tfvars.example terraform.tfvars
-```
-
-You must provide:
-- `aws_region`
-- `name_prefix`
-- `public_key_path` (SSH key used to access the MongoDB VM)
-- `your_name` (used to write `wizexercise.txt` inside the app image)
-
-### 2) Deploy infrastructure
-```bash
-make infra-init
-make infra-apply
-```
-
-Terraform outputs:
-- EKS cluster name
-- MongoDB private IP / DNS
-- S3 backup bucket name (intentionally public)
-- App endpoint (after app deploy)
-
-### 3) Configure kubectl
-```bash
-make kubeconfig
-kubectl get nodes
-```
-
-### 4) Build and deploy the application
-This will build the container image (with `wizexercise.txt` containing your name), push to ECR, and deploy to EKS.
-
-```bash
-make app-build-push
-make app-deploy
-```
-
-### 5) Validate exercise requirements (demo-ready)
-See: `scripts/demo_commands.md`
-
-## Tear down
-```bash
-make infra-destroy
-```
-
-## Repo Layout
-- `infra/terraform/` — Terraform for VPC, EKS (private nodes), MongoDB VM, public S3 backups, and security tooling
-- `app/` — Node/Express todo app using MongoDB
-- `app/k8s/` — Kubernetes manifests (Ingress, RBAC cluster-admin binding, etc.)
-- `.github/workflows/` — Two pipelines: IaC deploy + app build/push/deploy (plus scans)
-- `scripts/` — demo commands and helper scripts
-
-## Notes on intentional weaknesses
-The intentional weaknesses are implemented in Terraform (see `infra/terraform/main.tf` and security group/IAM resources):
-- SSH open to the world on the Mongo VM
-- EC2 instance role is overly permissive (EC2 create/run/etc.)
-- S3 backup bucket is public-read + list
-- App ServiceAccount is bound to cluster-admin
-
-## Production hardening (talk track)
-See `docs/production_hardening.md`.
+> This repo is intended for demonstration/testing purposes.
 
 ---
-**Author:** (edit)  
-**Last updated:** 2026-01-31
+
+## Repository Structure
+
+```
+├───.github
+│   └───workflows
+├───app
+│   ├───k8s
+│   ├───public
+│   └───src
+├───docs
+├───infra
+│   └───terraform
+└───scripts
+```
+
+---
+
+## Prerequisites
+
+- AWS credentials configured (able to create EKS/IAM/VPC/ECR/S3/etc.)
+- Terraform installed (per `infra/terraform/versions.tf`)
+- kubectl installed
+- Docker installed (for local build + push)
+
+---
+
+## Quickstart
+
+```bash
+make infra-init
+make infra-plan
+make infra-apply
+make kubeconfig
+make app-build-push
+make app-deploy
+make app-status
+```
+
+---
+
+## Verify `wizexercise.txt` in the running container
+
+Requirement: the container image must include `wizexercise.txt` containing your name.  
+In this project it is expected at:
+
+- `/app/wizexercise.txt`
+
+Verify:
+
+```bash
+kubectl get pods -n wizapp
+kubectl exec -n wizapp -it <pod_name> -- sh -lc 'ls -l /app/wizexercise.txt && echo "-----" && cat /app/wizexercise.txt'
+```
+
+Expected output includes your name (e.g., `Richard Barrett`).
+
+---
+
+## Wiki
+
+A full GitHub Wiki page set is provided in the `wiki/` folder of the downloadable artifact from ChatGPT.
+Copy those files into your repo Wiki (`[https://github.com/Richard-Barrett/wiz-tech-exercise-monorepo.wiki.git](https://github.com/Richard-Barrett/wiz-tech-exercise-monorepo/wiki)`) to publish them.
+
+---
+
+## Dependabot
+
+This repo includes a Dependabot config for:
+- GitHub Actions workflows
+- Terraform providers/modules
+- NPM dependencies
+
+See `.github/dependabot.yml`.
