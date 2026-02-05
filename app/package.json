@@ -1,0 +1,13 @@
+{
+  "name": "wizapp",
+  "version": "1.0.0",
+  "description": "Wiz technical exercise app (todo) backed by MongoDB on VM",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "mongodb": "^6.9.0"
+  }
+}

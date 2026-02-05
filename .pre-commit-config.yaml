@@ -1,0 +1,105 @@
+repos:
+  # ---------------------------
+  # General hygiene (fast + high value)
+  # ---------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=10240"]
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: detect-private-key
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: check-case-conflict
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+
+  # ---------------------------
+  # Formatting: YAML + GitHub Actions files
+  # ---------------------------
+  - repo: https://github.com/google/yamlfmt
+    rev: v0.13.0
+    hooks:
+      - id: yamlfmt
+        args: ["-w"]
+
+  # ---------------------------
+  # Terraform: fmt/validate + linting
+  # ---------------------------
+  - repo: https://github.com/antonbabenko/pre-commit-terraform
+    rev: v1.92.1
+    hooks:
+      - id: terraform_fmt
+        args: ["-recursive"]
+      - id: terraform_validate
+        args:
+          - "-no-color"
+        files: ^infra/terraform/
+      - id: tflint
+        args: ["--init"]
+        files: ^infra/terraform/
+      # Optional but useful if you use docs:
+      # - id: terraform_docs
+      #   args: ["--args=--sort-by required"]
+
+  # ---------------------------
+  # Security scanning
+  # ---------------------------
+  - repo: https://github.com/bridgecrewio/checkov
+    rev: 3.2.322
+    hooks:
+      - id: checkov
+        name: checkov (terraform)
+        args:
+          - "--quiet"
+          - "--framework"
+          - "terraform"
+          - "--directory"
+          - "infra/terraform"
+        pass_filenames: false
+
+  # Gitleaks is great at catching accidental secrets
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.20.1
+    hooks:
+      - id: gitleaks
+
+  # ---------------------------
+  # Dockerfile linting
+  # ---------------------------
+  - repo: https://github.com/hadolint/hadolint
+    rev: v2.12.0
+    hooks:
+      - id: hadolint
+        files: (^|/)Dockerfile$
+
+  # ---------------------------
+  # App: Node/JS formatting + linting
+  # (Assumes you have package.json in /app with scripts)
+  # ---------------------------
+  - repo: https://github.com/pre-commit/mirrors-eslint
+    rev: v9.9.1
+    hooks:
+      - id: eslint
+        files: ^app/.*\.(js|jsx|ts|tsx)$
+        additional_dependencies: []
+        # If you want it to auto-fix, uncomment:
+        # args: ["--fix"]
+
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v3.3.3
+    hooks:
+      - id: prettier
+        files: ^app/.*\.(js|jsx|ts|tsx|json|md|yaml|yml)$
+
+  # ---------------------------
+  # GitHub Actions workflow linting
+  # ---------------------------
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.4
+    hooks:
+      - id: actionlint

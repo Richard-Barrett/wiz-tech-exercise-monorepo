@@ -1,0 +1,118 @@
+name: infra-deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      aws_region:
+        description: "AWS region"
+        required: true
+        default: "us-east-1"
+      name_prefix:
+        description: "Name prefix for resources"
+        required: false
+        default: "wizex"
+      your_name:
+        description: "Name written into wizexercise.txt"
+        required: false
+        default: "Richard Barrett"
+      ssh_allowed_cidr:
+        description: "CIDR allowed to SSH to Mongo VM (0.0.0.0/0 satisfies Wiz requirement)"
+        required: false
+        default: "0.0.0.0/0"
+      enable_overly_permissive_ec2_role:
+        description: "Keep ON for exercise misconfiguration"
+        required: false
+        default: "true"
+      do_destroy:
+        description: "Set true to destroy instead of apply"
+        required: false
+        default: "false"
+
+  push:
+    paths:
+      - "infra/terraform/**"
+      - ".github/workflows/infra-deploy.yml"
+
+  pull_request:
+    paths:
+      - "infra/terraform/**"
+      - ".github/workflows/infra-deploy.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  terraform:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        shell: bash
+        working-directory: infra/terraform
+
+    env:
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+
+      # AWS region for SDK/CLI
+      AWS_REGION: ${{ github.event.inputs.aws_region || 'us-east-1' }}
+      AWS_DEFAULT_REGION: ${{ github.event.inputs.aws_region || 'us-east-1' }}
+
+      # ---- Terraform variables (must match variables.tf names) ----
+      TF_VAR_aws_region: ${{ github.event.inputs.aws_region || 'us-east-1' }}
+      TF_VAR_name_prefix: ${{ github.event.inputs.name_prefix || 'wizex' }}
+      TF_VAR_your_name: ${{ github.event.inputs.your_name || 'Richard Barrett' }}
+      TF_VAR_ssh_allowed_cidr: ${{ github.event.inputs.ssh_allowed_cidr || '0.0.0.0/0' }}
+      TF_VAR_enable_overly_permissive_ec2_role: ${{ github.event.inputs.enable_overly_permissive_ec2_role || 'true' }}
+
+      # Required path var: we generate this key during the job
+      TF_VAR_public_key_path: /tmp/wizexercise_id_rsa.pub
+
+      # Sensitive passwords (recommended as secrets)
+      TF_VAR_mongo_admin_password: ${{ secrets.MONGO_ADMIN_PASSWORD }}
+      TF_VAR_mongo_app_password: ${{ secrets.MONGO_APP_PASSWORD }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.12.0"
+
+      - name: Configure AWS credentials (static keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Generate ephemeral SSH keypair for Mongo VM access
+        run: |
+          ssh-keygen -t rsa -b 4096 -N "" -f /tmp/wizexercise_id_rsa
+          ls -l /tmp/wizexercise_id_rsa /tmp/wizexercise_id_rsa.pub
+
+      - name: Terraform fmt
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init
+        run: terraform init -input=false
+
+      - name: Terraform validate
+        run: terraform validate -no-color
+
+      - name: Terraform plan (PR/push)
+        if: github.event_name != 'workflow_dispatch'
+        run: terraform plan -no-color
+
+      - name: Terraform apply (manual)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.do_destroy != 'true'
+        run: terraform apply -no-color -auto-approve
+
+      - name: Terraform destroy (manual)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.do_destroy == 'true'
+        run: terraform destroy -no-color -auto-approve

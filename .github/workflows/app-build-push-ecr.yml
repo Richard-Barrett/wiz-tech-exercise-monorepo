@@ -1,0 +1,113 @@
+name: app-build-push-ecr
+
+on:
+  workflow_dispatch:
+    inputs:
+      aws_region:
+        description: "AWS region"
+        required: true
+        default: "us-east-1"
+      ecr_repo:
+        description: "ECR repo name (must exist)"
+        required: true
+        default: "wizapp"
+      your_name:
+        description: "Name to embed in wizexercise.txt via build arg"
+        required: true
+        default: "Richard Barrett"
+      image_tag:
+        description: "Optional tag override (default: git sha)"
+        required: false
+        default: ""
+  push:
+    branches: [ "main" ]
+    paths:
+      - "app/**"
+      - ".github/workflows/app-build-push-ecr.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build_and_push:
+    runs-on: ubuntu-22.04
+
+    env:
+      AWS_REGION: ${{ inputs.aws_region || 'us-east-1' }}
+      ECR_REPO: ${{ inputs.ecr_repo || 'wizapp' }}
+      YOUR_NAME: ${{ inputs.your_name || 'Richard Barrett' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (static keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # If Terraform already creates the repo, you can remove this.
+      # Leaving it in makes the workflow self-sufficient.
+      - name: Ensure ECR repository exists
+        run: |
+          aws ecr describe-repositories --repository-names "${ECR_REPO}" >/dev/null 2>&1 || \
+          aws ecr create-repository --repository-name "${ECR_REPO}" >/dev/null
+
+      - name: Set image tag
+        id: tag
+        run: |
+          if [ -n "${{ inputs.image_tag }}" ]; then
+            echo "value=${{ inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push image
+        id: image
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          IMAGE_URI="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${{ steps.tag.outputs.value }}"
+
+          echo "Building ${IMAGE_URI}"
+          docker build \
+            --build-arg YOUR_NAME="${YOUR_NAME}" \
+            -t "${IMAGE_URI}" \
+            ./app
+
+          docker push "${IMAGE_URI}"
+
+          echo "image_uri=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
+
+      # Optional: scan the image before you deploy (good interview bonus)
+      - name: Trivy image scan (CRITICAL,HIGH)
+        uses: aquasecurity/trivy-action@0.32.0
+        with:
+          image-ref: ${{ steps.image.outputs.image_uri }}
+          format: "table"
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: "CRITICAL,HIGH"
+
+      - name: Save image URI artifact
+        run: |
+          echo "${{ steps.image.outputs.image_uri }}" > image_uri.txt
+
+      - name: Upload image URI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-uri
+          path: image_uri.txt
+
+      - name: Print image URI
+        run: |
+          echo "Pushed: ${{ steps.image.outputs.image_uri }}"
+          echo "Use this for Terraform var app_image_uri"

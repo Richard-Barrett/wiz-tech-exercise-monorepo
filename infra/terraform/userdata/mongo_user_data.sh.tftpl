@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+exec > >(tee /var/log/wiz-mongo-userdata.log) 2>&1
+
+BACKUPS_BUCKET="${backups_bucket}"
+AWS_REGION="${aws_region}"
+
+ADMIN_USER="${mongo_admin_user}"
+ADMIN_PASS="${mongo_admin_password}"
+APP_USER="${mongo_app_user}"
+APP_PASS="${mongo_app_password}"
+APP_DB="${mongo_db_name}"
+
+# -----------------------------
+# Helpers
+# -----------------------------
+log() { echo "[$$(date -u +'%Y-%m-%dT%H:%M:%SZ')] $*"; }
+
+wait_for_mongo() {
+  # Wait until mongod answers ping. Bounded retries.
+  # Uses a short sleep with slight backoff.
+  local max_attempts="$${1:-60}"
+  local attempt=1
+  local sleep_s=2
+
+  log "Waiting for MongoDB to be ready (max_attempts=$${max_attempts})..."
+  while true; do
+    if mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok' >/dev/null 2>&1; then
+      log "MongoDB is responding to ping."
+      return 0
+    fi
+
+    if [[ "$${attempt}" -ge "$${max_attempts}" ]]; then
+      log "ERROR: MongoDB did not become ready in time."
+      log "Last 200 lines of mongod.log:"
+      tail -n 200 /var/log/mongodb/mongod.log || true
+      return 1
+    fi
+
+    log "MongoDB not ready yet (attempt $${attempt}/$${max_attempts}). Sleeping $${sleep_s}s..."
+    sleep "$${sleep_s}"
+    attempt=$$((attempt + 1))
+    # gentle backoff up to 10s
+    if [[ "$${sleep_s}" -lt 10 ]]; then sleep_s=$$((sleep_s + 1)); fi
+  done
+}
+
+mongo_eval() {
+  local js="$1"
+  mongosh --quiet --eval "$${js}"
+}
+
+# -----------------------------
+# Install deps
+# -----------------------------
+log "[1/8] Installing dependencies..."
+apt-get update -y
+apt-get install -y curl gnupg ca-certificates lsb-release jq tar
+
+log "[2/8] Installing AWS CLI..."
+apt-get install -y awscli
+
+log "[3/8] Installing MongoDB (outdated major version: 5.0)..."
+curl -fsSL https://pgp.mongodb.com/server-5.0.asc | gpg --dearmor -o /usr/share/keyrings/mongodb-server-5.0.gpg
+echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-5.0.gpg ] https://repo.mongodb.org/apt/ubuntu focal/mongodb-org/5.0 multiverse" \
+  > /etc/apt/sources.list.d/mongodb-org-5.0.list
+apt-get update -y
+apt-get install -y mongodb-org
+
+systemctl enable mongod
+systemctl start mongod
+
+# -----------------------------
+# HARDENING: Wait loop before user creation
+# -----------------------------
+log "[4/8] Waiting for MongoDB and creating users (auth will be enabled after this)..."
+wait_for_mongo 60
+
+mongo_eval "
+(function(){
+  const adminDb = db.getSiblingDB('admin');
+  const u = adminDb.getUser('$${ADMIN_USER}');
+  if (!u) {
+    print('Creating admin user: $${ADMIN_USER}');
+    adminDb.createUser({
+      user: '$${ADMIN_USER}',
+      pwd:  '$${ADMIN_PASS}',
+      roles:[{role:'root', db:'admin'}]
+    });
+  } else {
+    print('Admin user already exists: $${ADMIN_USER}');
+  }
+})();"
+
+mongo_eval "
+(function(){
+  const appDb = db.getSiblingDB('$${APP_DB}');
+  const u = appDb.getUser('$${APP_USER}');
+  if (!u) {
+    print('Creating app user: $${APP_USER} on db: $${APP_DB}');
+    appDb.createUser({
+      user: '$${APP_USER}',
+      pwd:  '$${APP_PASS}',
+      roles:[{role:'readWrite', db:'$${APP_DB}'}]
+    });
+  } else {
+    print('App user already exists: $${APP_USER} on db: $${APP_DB}');
+  }
+})();"
+
+log "Verifying created users exist..."
+mongo_eval "db.getSiblingDB('admin').getUser('$${ADMIN_USER}') ? print('Verified admin user exists') : quit(2);"
+mongo_eval "db.getSiblingDB('$${APP_DB}').getUser('$${APP_USER}') ? print('Verified app user exists') : quit(3);"
+
+# -----------------------------
+# Enable auth + bind to private IP
+# -----------------------------
+log "[5/8] Enabling MongoDB authentication and binding to private IP..."
+PRIV_IP="$$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4 || true)"
+if [[ -z "$${PRIV_IP:-}" ]]; then
+  log "ERROR: Could not fetch local-ipv4 from instance metadata."
+  exit 1
+fi
+
+sed -i "s/^\(\s*bindIp:\s*\).*/\1127.0.0.1,$${PRIV_IP}/" /etc/mongod.conf
+
+if ! grep -qE "^\s*security:\s*$$" /etc/mongod.conf; then
+  cat >> /etc/mongod.conf <<EOF
+
+security:
+  authorization: enabled
+EOF
+else
+  if ! grep -qE "^\s*authorization:\s*enabled\s*$$" /etc/mongod.conf; then
+    sed -i '/^\s*security:\s*$$/a\  authorization: enabled' /etc/mongod.conf
+  fi
+fi
+
+systemctl restart mongod
+
+wait_for_mongo 60
+log "MongoDB restarted with auth enabled."
+
+# -----------------------------
+# Backup script
+# -----------------------------
+log "[6/8] Writing backup script..."
+cat > /usr/local/bin/mongo_backup_to_s3.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+TS="$(date -u +%Y-%m-%dT%H%M%SZ)"
+OUT_DIR="/tmp/mongo-backup-$TS"
+ARCHIVE="/tmp/mongo-backup-$TS.tgz"
+
+ADMIN_USER="__ADMIN_USER__"
+ADMIN_PASS="__ADMIN_PASS__"
+AWS_REGION="__AWS_REGION__"
+BUCKET="__BUCKET__"
+
+mkdir -p "$OUT_DIR"
+mongodump --username "$ADMIN_USER" --password "$ADMIN_PASS" --authenticationDatabase admin --out "$OUT_DIR"
+
+tar -czf "$ARCHIVE" -C "$OUT_DIR" .
+aws s3 cp "$ARCHIVE" "s3://$BUCKET/backups/$TS.tgz" --region "$AWS_REGION"
+
+rm -rf "$OUT_DIR" "$ARCHIVE"
+EOF
+
+sed -i "s/__ADMIN_USER__/$${ADMIN_USER}/g" /usr/local/bin/mongo_backup_to_s3.sh
+sed -i "s/__ADMIN_PASS__/$${ADMIN_PASS}/g" /usr/local/bin/mongo_backup_to_s3.sh
+sed -i "s/__AWS_REGION__/$${AWS_REGION}/g" /usr/local/bin/mongo_backup_to_s3.sh
+sed -i "s/__BUCKET__/$${BACKUPS_BUCKET}/g" /usr/local/bin/mongo_backup_to_s3.sh
+chmod +x /usr/local/bin/mongo_backup_to_s3.sh
+
+log "[7/8] Scheduling daily backups (02:17 UTC)..."
+cat > /etc/cron.d/mongo_backup <<EOF
+17 2 * * * root /usr/local/bin/mongo_backup_to_s3.sh >> /var/log/mongo_backup.log 2>&1
+EOF
+
+log "[8/8] Done."

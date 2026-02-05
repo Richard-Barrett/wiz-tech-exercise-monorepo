@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wizapp
+  namespace: wizapp
+  labels:
+    app: wizapp
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: wizapp
+  template:
+    metadata:
+      labels:
+        app: wizapp
+    spec:
+      serviceAccountName: wizapp-sa
+      containers:
+        - name: wizapp
+          image: __IMAGE_URI__
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+          env:
+            - name: MONGODB_URI
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-conn
+                  key: MONGODB_URI
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 20

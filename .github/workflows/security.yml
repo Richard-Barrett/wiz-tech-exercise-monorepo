@@ -1,0 +1,36 @@
+name: security-scans
+
+on:
+  pull_request:
+    paths:
+      - "infra/terraform/**"
+      - "app/**"
+      - ".github/workflows/security.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  iac:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: infra/terraform
+          quiet: true
+          soft_fail: true
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build local image
+        run: |
+          docker build -t wizapp:pr --build-arg YOUR_NAME="PR Scan" app
+      - name: Trivy scan
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: "wizapp:pr"
+          format: table
+          exit-code: "0"

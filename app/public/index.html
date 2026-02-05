@@ -1,0 +1,61 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wiz Exercise Todo</title>
+    <style>
+      body { font-family: sans-serif; margin: 2rem; max-width: 720px; }
+      input, button { padding: 0.5rem; }
+      li { margin: 0.25rem 0; }
+      .row { display: flex; gap: 0.5rem; }
+      .row input { flex: 1; }
+    </style>
+  </head>
+  <body>
+    <h1>Wiz Exercise Todo</h1>
+    <p>Backed by MongoDB running on a VM.</p>
+
+    <div class="row">
+      <input id="text" placeholder="Add a todo..." />
+      <button id="add">Add</button>
+    </div>
+
+    <h3>Todos</h3>
+    <ul id="list"></ul>
+
+    <script>
+      async function load() {
+        const res = await fetch("/api/todos");
+        const items = await res.json();
+        const list = document.getElementById("list");
+        list.innerHTML = "";
+        items.forEach(item => {
+          const li = document.createElement("li");
+          li.textContent = item.text + " ";
+          const btn = document.createElement("button");
+          btn.textContent = "Delete";
+          btn.onclick = async () => {
+            await fetch("/api/todos/" + item._id, { method: "DELETE" });
+            load();
+          };
+          li.appendChild(btn);
+          list.appendChild(li);
+        });
+      }
+
+      document.getElementById("add").onclick = async () => {
+        const text = document.getElementById("text").value;
+        await fetch("/api/todos", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text })
+        });
+        document.getElementById("text").value = "";
+        load();
+      };
+
+      load();
+    </script>
+  </body>
+</html>

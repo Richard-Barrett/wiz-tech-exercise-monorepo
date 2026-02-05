@@ -1,0 +1,75 @@
+name: app-build-deploy
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "app/**"
+      - ".github/workflows/app-build-deploy.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: "v1.29.0"
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build image
+        run: |
+          IMAGE_TAG=${GITHUB_SHA::7}
+          YOUR_NAME="${{ secrets.YOUR_NAME }}"
+          if [[ -z "$YOUR_NAME" ]]; then
+            YOUR_NAME="Your Name"
+          fi
+          REPO="${{ secrets.ECR_REPO_URL }}"
+          IMAGE_URI="${REPO}:${IMAGE_TAG}"
+          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+          docker build -t "$IMAGE_URI" --build-arg YOUR_NAME="$YOUR_NAME" app
+
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ${{ env.IMAGE_URI }}
+          format: table
+          exit-code: "0"
+
+      - name: Push image
+        run: docker push "${IMAGE_URI}"
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name "${{ secrets.EKS_CLUSTER_NAME }}" --region "${{ secrets.AWS_REGION }}"
+          kubectl get nodes
+
+      - name: Deploy manifests
+        run: |
+          kubectl apply -f app/k8s/namespace.yaml
+          # MONGODB_URI should be set in secrets in a real pipeline. Here we set it from repo secret.
+          kubectl -n wizapp create secret generic mongo-conn                 --from-literal=MONGODB_URI="${{ secrets.MONGODB_URI }}"                 --dry-run=client -o yaml | kubectl apply -f -
+          kubectl apply -f app/k8s/rbac.yaml
+          sed "s|__IMAGE_URI__|${IMAGE_URI}|g" app/k8s/deployment.yaml | kubectl apply -f -
+          kubectl apply -f app/k8s/service.yaml
+          kubectl apply -f app/k8s/ingress.yaml
+          kubectl -n wizapp rollout status deploy/wizapp --timeout=180s || true
+          kubectl -n wizapp get ingress
