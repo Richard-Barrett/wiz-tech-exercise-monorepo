@@ -74,7 +74,7 @@ Expected output includes your name (e.g., `Richard Barrett`).
 ## Wiki
 
 A full GitHub Wiki page set is provided in the `wiki/` folder of the downloadable artifact from ChatGPT.
-Copy those files into your repo Wiki [Wiki](https://github.com/Richard-Barrett/wiz-tech-exercise-monorepo.wiki.git) to publish them.
+Copy those files into your repo Wiki [Wiki](https://github.com/Richard-Barrett/wiz-tech-exercise-monorepo/wiki) to publish them.
 
 ---
 
