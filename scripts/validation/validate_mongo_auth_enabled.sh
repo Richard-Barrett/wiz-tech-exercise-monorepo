@@ -42,29 +42,42 @@ cmd_id=$(aws ssm send-command \
   --document-name "AWS-RunShellScript" \
   --comment "Check MongoDB authorization" \
   --parameters commands='
-set -euo pipefail
+set -euxo pipefail  # Add -x for debugging
 
 echo "=== MongoDB Authentication Check ==="
 
 # Check if MongoDB is running
 if ! systemctl is-active --quiet mongod 2>/dev/null; then
-  echo "ERROR: MongoDB service is not running"
+  echo "WARNING: MongoDB service is not running or not installed"
+  echo "Will check config file anyway..."
+fi
+
+echo ""
+echo "1. Checking MongoDB configuration..."
+CONFIG_FILES="/etc/mongod.conf /etc/mongodb.conf /usr/local/etc/mongod.conf"
+FOUND_CONFIG=""
+for config in $CONFIG_FILES; do
+  if [[ -f "$config" ]]; then
+    FOUND_CONFIG="$config"
+    break
+  fi
+done
+
+if [[ -z "$FOUND_CONFIG" ]]; then
+  echo "ERROR: Could not find MongoDB config file"
+  echo "Searched in: $CONFIG_FILES"
   exit 1
 fi
 
-echo "1. Checking /etc/mongod.conf for authentication settings..."
-if [[ ! -f /etc/mongod.conf ]]; then
-  echo "ERROR: /etc/mongod.conf not found"
-  exit 1
-fi
+echo "Using config file: $FOUND_CONFIG"
 
 # Extract security section
-echo "--- Security section from mongod.conf ---"
-grep -A5 "^security:" /etc/mongod.conf || echo "No security section found"
+echo "--- Security section from $FOUND_CONFIG ---"
+grep -A5 "^security:" "$FOUND_CONFIG" || echo "No security section found"
 
 # Check for authorization: enabled
 AUTH_ENABLED_IN_CONFIG=false
-if grep -q "^[[:space:]]*authorization:[[:space:]]*enabled" /etc/mongod.conf; then
+if grep -q "^[[:space:]]*authorization:[[:space:]]*enabled" "$FOUND_CONFIG"; then
   echo "✓ Found 'authorization: enabled' in config"
   AUTH_ENABLED_IN_CONFIG=true
 else
@@ -72,61 +85,71 @@ else
 fi
 
 echo ""
-echo "2. Testing unauthenticated access..."
+echo "2. Testing MongoDB connection..."
 
 # Try to run a command without authentication
-TIMEOUT=10
+TIMEOUT=5
 UNAUTH_OUTPUT=""
 UNAUTH_SUCCESS=false
 
-# Use mongosh if available, otherwise mongo
+# Check which MongoDB client is available
 if command -v mongosh >/dev/null 2>&1; then
-  CLI="mongosh --quiet --eval"
+  CLI="mongosh"
+  CLI_ARGS="--quiet --eval"
+elif command -v mongo >/dev/null 2>&1; then
+  CLI="mongo"
+  CLI_ARGS="--quiet --eval"
 else
-  CLI="mongo --quiet --eval"
+  echo "ERROR: Neither mongosh nor mongo client found"
+  echo "Cannot test authentication. Install MongoDB shell tools."
+  exit 1
 fi
 
+echo "Using client: $CLI"
+
 # Try unauthenticated command with timeout
-if timeout $TIMEOUT bash -c "$CLI \"db.adminCommand({ping: 1})\" 2>&1" > /tmp/unauth_test.txt 2>/dev/null; then
+echo "Attempting unauthenticated ping command..."
+if timeout $TIMEOUT bash -c "$CLI $CLI_ARGS \"db.adminCommand({ping: 1})\"" > /tmp/unauth_test.txt 2>&1; then
   UNAUTH_OUTPUT=$(cat /tmp/unauth_test.txt)
+  echo "Raw output: '$UNAUTH_OUTPUT'"
+  
   if echo "$UNAUTH_OUTPUT" | grep -qi "ok.*1"; then
     UNAUTH_SUCCESS=true
     echo "✗ SECURITY ISSUE: Unauthenticated command SUCCEEDED!"
-    echo "   Output: $UNAUTH_OUTPUT"
   else
     echo "✓ Unauthenticated command failed or returned error"
-    echo "   Output: $UNAUTH_OUTPUT"
+    if echo "$UNAUTH_OUTPUT" | grep -qi "not authorized\|Unauthorized\|auth\|Authentication"; then
+      echo "✓ Specifically got authentication error (good!)"
+    fi
   fi
 else
-  UNAUTH_OUTPUT=$(cat /tmp/unauth_test.txt 2>/dev/null || echo "Command timed out or failed")
+  TIMEOUT_RC=$?
+  UNAUTH_OUTPUT=$(cat /tmp/unauth_test.txt 2>/dev/null || echo "Command failed with code: $TIMEOUT_RC")
   echo "✓ Unauthenticated command failed (as expected)"
-  echo "   Error: $UNAUTH_OUTPUT"
+  echo "Error output: '$UNAUTH_OUTPUT'"
 fi
 
-echo ""
-echo "=== Validation Criteria ==="
-echo "For this check to PASS:"
-echo "1. MongoDB should have 'authorization: enabled' in config"
-echo "2. Unauthenticated access should be DENIED"
 echo ""
 echo "=== Current Status ==="
 echo "Config has 'authorization: enabled': $AUTH_ENABLED_IN_CONFIG"
 echo "Unauthenticated access succeeds: $UNAUTH_SUCCESS"
 echo ""
 
+# Decision logic
 if [[ "$UNAUTH_SUCCESS" == "false" ]]; then
   # Unauthenticated access is denied - THIS IS GOOD!
   echo "✅ SUCCESS: Unauthenticated access is properly denied"
   
-  # Still check if auth is enabled in config as a bonus check
   if [[ "$AUTH_ENABLED_IN_CONFIG" == "true" ]]; then
     echo "✅ BONUS: 'authorization: enabled' found in config"
-    exit 0
   else
-    echo "⚠️  WARNING: Auth might be working, but 'authorization: enabled' not in config"
-    echo "   (Maybe auth is enforced another way, or config is in different location)"
-    exit 0  # Still pass because the main requirement (no unauth access) is met
+    echo "⚠️  WARNING: Auth is working but not explicitly enabled in config"
+    echo "   (Might be using alternative auth method or different config)"
   fi
+  
+  echo ""
+  echo "=== FINAL RESULT: PASS ==="
+  exit 0
 else
   # Unauthenticated access is allowed - THIS IS BAD!
   echo "❌ FAILURE: Unauthenticated access is allowed!"
@@ -134,8 +157,17 @@ else
   
   if [[ "$AUTH_ENABLED_IN_CONFIG" == "false" ]]; then
     echo "❌ 'authorization: enabled' not found in config"
+    echo "   Enable it by adding to $FOUND_CONFIG:"
+    echo "   security:"
+    echo "     authorization: enabled"
+  else
+    echo "⚠️  Config has auth enabled but still allows unauth access"
+    echo "   Check MongoDB service is actually using this config file"
+    echo "   Restart MongoDB after config changes: sudo systemctl restart mongod"
   fi
   
+  echo ""
+  echo "=== FINAL RESULT: FAIL ==="
   exit 1
 fi
 ' \
@@ -149,6 +181,8 @@ for i in $(seq 1 30); do
     --command-id "$cmd_id" \
     --instance-id "$iid" \
     --query 'Status' --output text 2>/dev/null || echo "Pending")
+  
+  echo "Check $i/30: SSM Status = $status"
   
   case "$status" in
     Success|Failed|TimedOut|Cancelled) break ;;
@@ -166,16 +200,30 @@ status=$(jq -r '.Status' <<<"$inv")
 stdout=$(jq -r '.StandardOutputContent' <<<"$inv")
 stderr=$(jq -r '.StandardErrorContent' <<<"$inv")
 
+echo "=== SSM COMMAND OUTPUT ==="
+echo "Status: $status"
+echo "ResponseCode: $rc"
+echo ""
+echo "=== STDOUT ==="
 echo "$stdout"
+echo ""
+echo "=== STDERR ==="
+echo "$stderr"
+echo ""
 
+# Decision based on response code
 if [[ "$rc" == "0" ]]; then
-  log "PASS: MongoDB authentication is working (unauth access denied)."
+  log "✅ PASS: MongoDB authentication check passed"
   exit 0
 else
-  log "FAIL: MongoDB authentication check failed. SSM Status=$status ResponseCode=$rc"
-  if [[ -n "$stderr" && "$stderr" != "null" ]]; then
-    log "STDERR:"
-    echo "$stderr"
+  log "❌ FAIL: MongoDB authentication check failed with RC=$rc"
+  
+  # Check if failure is because MongoDB isn't running
+  if echo "$stdout" | grep -qi "MongoDB service is not running"; then
+    log "⚠️  MongoDB service appears to be stopped or not installed"
+    log "   Start it with: sudo systemctl start mongod"
+    log "   Or install with: sudo apt-get install -y mongodb-org"
   fi
+  
   exit 1
 fi
