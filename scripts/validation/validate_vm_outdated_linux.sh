@@ -14,7 +14,7 @@ echo "AMI Name: $name"
 
 # Very generic heuristic: look for Ubuntu 18.04 / Amazon Linux 2 / etc.
 # Customize if you know the AMI you used.
-if echo "$name" | grep -Eqi '(ubuntu/images/hvm-ssd/ubuntu-bionic|18\.04|amzn2|amazon-linux-2|centos-7)'; then
+if echo "$name" | grep -Eqi '(ubuntu/images/hvm-ssd/ubuntu-bionic|ubuntu/images/hvm-ssd/ubuntu-focal|18\.04|20\.04|amzn2|amazon-linux-2|centos-7)'; then
   echo "Heuristic suggests OS is >= 1 year outdated (based on AMI name)."
   exit 0
 fi
