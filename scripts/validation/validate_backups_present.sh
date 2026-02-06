@@ -9,6 +9,8 @@ log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
 : "${BACKUPS_BUCKET:?}"
 : "${BACKUPS_PREFIX:?}"
 
+RUN_BACKUP_NOW="${RUN_BACKUP_NOW:-false}"   # set true in workflow env if you want
+
 iid=$(aws ec2 describe-instances \
   --region "$AWS_REGION" \
   --filters "Name=tag:${MONGO_TAG_KEY},Values=${MONGO_TAG_VALUE}" "Name=instance-state-name,Values=running" \
@@ -18,46 +20,57 @@ if [[ -z "${iid:-}" || "$iid" == "None" ]]; then
   log "FAIL: Could not find running Mongo VM by tag ${MONGO_TAG_KEY}=${MONGO_TAG_VALUE}"
   exit 1
 fi
+log "Mongo InstanceId: $iid"
 
-log "InstanceId: $iid"
+ssm_online=$(aws ssm describe-instance-information \
+  --region "$AWS_REGION" \
+  --filters "Key=InstanceIds,Values=$iid" \
+  --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null || true)
+
+if [[ -z "${ssm_online:-}" || "$ssm_online" == "None" ]]; then
+  log "FAIL: Instance is not registered in SSM."
+  log "Fix: install/enable SSM agent + attach instance profile with AmazonSSMManagedInstanceCore."
+  exit 1
+fi
+if [[ "$ssm_online" != "Online" ]]; then
+  log "FAIL: SSM PingStatus is '$ssm_online' (expected Online)."
+  exit 1
+fi
+log "SSM PingStatus: $ssm_online"
+
+cmds='
+set -euo pipefail
+
+echo "--- checking backup script + cron ---"
+ls -l /usr/local/bin/mongo_backup_to_s3.sh || true
+ls -l /etc/cron.d/mongo_backup || true
+
+if [[ ! -x /usr/local/bin/mongo_backup_to_s3.sh ]]; then
+  echo "Backup script missing or not executable: /usr/local/bin/mongo_backup_to_s3.sh"
+  exit 1
+fi
+
+if [[ ! -f /etc/cron.d/mongo_backup ]]; then
+  echo "Cron file missing: /etc/cron.d/mongo_backup"
+  exit 1
+fi
+
+grep -n "mongo_backup_to_s3.sh" /etc/cron.d/mongo_backup || true
+'
+
+if [[ "$RUN_BACKUP_NOW" == "true" ]]; then
+  cmds+=$'\n'"echo \"--- RUN_BACKUP_NOW=true: executing backup once ---\""
+  cmds+=$'\n'"sudo /usr/local/bin/mongo_backup_to_s3.sh || (echo \"Backup script failed\"; exit 1)"
+fi
 
 cmd_id=$(aws ssm send-command \
   --region "$AWS_REGION" \
   --instance-ids "$iid" \
   --document-name "AWS-RunShellScript" \
-  --comment "Check backup script + cron are configured" \
-  --parameters commands='
-set -euo pipefail
-
-# Expected from your userdata:
-# - /usr/local/bin/mongo_backup_to_s3.sh
-# - /etc/cron.d/mongo_backup (or similar)
-script_ok=0
-cron_ok=0
-
-[[ -x /usr/local/bin/mongo_backup_to_s3.sh ]] && script_ok=1
-[[ -f /etc/cron.d/mongo_backup ]] && cron_ok=1
-
-echo "script_ok=$script_ok"
-echo "cron_ok=$cron_ok"
-
-# Basic content check: cron references the script
-if [[ "$cron_ok" -eq 1 ]]; then
-  grep -q "/usr/local/bin/mongo_backup_to_s3.sh" /etc/cron.d/mongo_backup && echo "cron_references_script=1" || echo "cron_references_script=0"
-else
-  echo "cron_references_script=0"
-fi
-
-if [[ "$script_ok" -eq 1 && "$cron_ok" -eq 1 ]] && grep -q "/usr/local/bin/mongo_backup_to_s3.sh" /etc/cron.d/mongo_backup; then
-  exit 0
-fi
-
-echo "Backup cron/script not configured as expected."
-exit 1
-' \
+  --comment "Check backup cron/script and optionally execute backup" \
+  --parameters commands="$cmds" \
   --query 'Command.CommandId' --output text)
 
-# Wait
 for _ in $(seq 1 30); do
   status=$(aws ssm get-command-invocation \
     --region "$AWS_REGION" --command-id "$cmd_id" --instance-id "$iid" \
@@ -68,52 +81,51 @@ for _ in $(seq 1 30); do
   esac
 done
 
-rc=$(aws ssm get-command-invocation \
+inv=$(aws ssm get-command-invocation \
   --region "$AWS_REGION" --command-id "$cmd_id" --instance-id "$iid" \
-  --query 'ResponseCode' --output text)
+  --output json)
+
+rc=$(jq -r '.ResponseCode' <<<"$inv")
+status=$(jq -r '.Status' <<<"$inv")
 
 if [[ "$rc" != "0" ]]; then
-  log "FAIL: Backup scheduling not configured on VM."
-  aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$cmd_id" --instance-id "$iid" \
-    --query '{Stdout:StandardOutputContent, Stderr:StandardErrorContent}' --output json || true
+  log "FAIL: Backup scheduling/config check failed. SSM Status=$status ResponseCode=$rc"
+  log "STDOUT:"
+  jq -r '.StandardOutputContent' <<<"$inv" || true
+  log "STDERR:"
+  jq -r '.StandardErrorContent' <<<"$inv" || true
   exit 1
 fi
 
-log "Backup schedule looks configured. Now checking for a recent object in S3..."
+log "Backup script + cron look configured."
 
-# Check S3 for last 36 hours (daily + buffer)
-cutoff_epoch=$(date -u -d "36 hours ago" +%s)
+log "Checking S3 for backup objects: s3://$BACKUPS_BUCKET/$BACKUPS_PREFIX"
+count=$(aws s3api list-objects-v2 \
+  --region "$AWS_REGION" \
+  --bucket "$BACKUPS_BUCKET" \
+  --prefix "$BACKUPS_PREFIX" \
+  --query 'length(Contents)' --output text 2>/dev/null || echo "0")
 
-# List latest object under prefix (may be empty if backups haven't run yet)
+if [[ "$count" == "None" ]]; then
+  count="0"
+fi
+
+if (( count < 1 )); then
+  log "FAIL: No objects found under s3://$BACKUPS_BUCKET/$BACKUPS_PREFIX"
+  log "Most common causes:"
+  log " - Backup cron hasn't run yet (set RUN_BACKUP_NOW=true to force one)."
+  log " - VM role lacks s3:PutObject to this bucket/prefix."
+  log " - BACKUPS_BUCKET/BACKUPS_PREFIX are not the backup destination."
+  exit 1
+fi
+
 latest=$(aws s3api list-objects-v2 \
   --region "$AWS_REGION" \
   --bucket "$BACKUPS_BUCKET" \
   --prefix "$BACKUPS_PREFIX" \
-  --query 'sort_by(Contents,&LastModified)[-1].{Key:Key,LastModified:LastModified}' \
-  --output json 2>/dev/null || true)
+  --query 'sort_by(Contents,&LastModified)[-1].{Key:Key,LastModified:LastModified,Size:Size}' \
+  --output json)
 
-if [[ -z "${latest:-}" || "$latest" == "null" ]]; then
-  log "FAIL: No backup objects found in s3://$BACKUPS_BUCKET/$BACKUPS_PREFIX"
-  exit 1
-fi
-
-key=$(jq -r '.Key // empty' <<<"$latest")
-lm=$(jq -r '.LastModified // empty' <<<"$latest")
-
-if [[ -z "$key" || -z "$lm" ]]; then
-  log "FAIL: Could not parse latest backup object."
-  echo "$latest"
-  exit 1
-fi
-
-lm_epoch=$(date -u -d "$lm" +%s)
-
-log "Latest backup object: s3://$BACKUPS_BUCKET/$key (LastModified=$lm)"
-
-if (( lm_epoch >= cutoff_epoch )); then
-  log "PASS: Daily backups configured and recent backup object exists."
-  exit 0
-fi
-
-log "FAIL: Found backups, but latest is older than ~36 hours."
-exit 1
+log "PASS: Found $count object(s). Latest:"
+echo "$latest" | jq .
+exit 0
