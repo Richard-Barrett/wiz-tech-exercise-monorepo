@@ -1,0 +1,117 @@
+name: project-validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      aws_region:
+        description: "AWS region"
+        required: true
+        default: "us-east-1"
+      eks_cluster_name:
+        description: "EKS cluster name"
+        required: true
+        default: "wizex-eks"
+      k8s_namespace:
+        description: "App namespace"
+        required: true
+        default: "wizapp"
+      app_deployment_name:
+        description: "Kubernetes Deployment name"
+        required: true
+        default: "wizapp"
+      app_container_name:
+        description: "Container name in Deployment"
+        required: true
+        default: "wizapp"
+      expected_name_in_wizexercise:
+        description: "Expected content inside wizexercise.txt"
+        required: true
+        default: "Richard Barrett"
+      mongo_instance_tag_key:
+        description: "EC2 tag key to locate Mongo VM (ex: Name)"
+        required: true
+        default: "Name"
+      mongo_instance_tag_value:
+        description: "EC2 tag value to locate Mongo VM (ex: wizex-mongo)"
+        required: true
+        default: "wizex-mongo"
+      mongo_port:
+        description: "MongoDB port"
+        required: false
+        default: "27017"
+      backups_bucket:
+        description: "S3 bucket holding backups"
+        required: true
+        default: "wiz-tech-terraform-state"
+      backups_prefix:
+        description: "Prefix under bucket where backups land"
+        required: false
+        default: "backups/"
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/project-validation.yml"
+      - "scripts/validation/**"
+      - "infra/terraform/**"
+      - "app/**"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    env:
+      AWS_REGION: ${{ inputs.aws_region || 'us-east-1' }}
+      EKS_CLUSTER_NAME: ${{ inputs.eks_cluster_name || 'wizex-eks' }}
+      K8S_NAMESPACE: ${{ inputs.k8s_namespace || 'wizapp' }}
+      APP_DEPLOYMENT_NAME: ${{ inputs.app_deployment_name || 'wizapp' }}
+      APP_CONTAINER_NAME: ${{ inputs.app_container_name || 'wizapp' }}
+      EXPECTED_NAME: ${{ inputs.expected_name_in_wizexercise || 'Richard Barrett' }}
+      MONGO_TAG_KEY: ${{ inputs.mongo_instance_tag_key || 'Name' }}
+      MONGO_TAG_VALUE: ${{ inputs.mongo_instance_tag_value || 'wizex-mongo' }}
+      MONGO_PORT: ${{ inputs.mongo_port || '27017' }}
+      BACKUPS_BUCKET: ${{ inputs.backups_bucket }}
+      BACKUPS_PREFIX: ${{ inputs.backups_prefix || 'backups/' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (static keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Install tooling (kubectl, jq)
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y jq
+          curl -sSL -o kubectl "https://dl.k8s.io/release/$(curl -sSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/kubectl
+          kubectl version --client=true
+
+      - name: Configure kubeconfig for EKS
+        run: |
+          aws eks update-kubeconfig --region "${AWS_REGION}" --name "${EKS_CLUSTER_NAME}"
+          kubectl get nodes -o wide
+
+      - name: Run validation suite
+        run: |
+          bash scripts/validation/validate_all.sh
+        shell: bash
+
+      - name: Upload validation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-report
+          path: |
+            validation_report.md
+            validation_report.json
