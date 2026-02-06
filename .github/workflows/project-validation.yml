@@ -80,7 +80,7 @@ jobs:
       MONGO_PORT: ${{ github.event.inputs.mongo_port || '27017' }}
 
       # FIXED: don't leave this blank on push runs
-      BACKUPS_BUCKET: ${{ github.event.inputs.backups_bucket || 'wiz-tech-terraform-state' }}
+      BACKUPS_BUCKET: ${{ github.event.inputs.backups_bucket || 'wizex-mongo-backups-bd467c' }}
       BACKUPS_PREFIX: ${{ github.event.inputs.backups_prefix || 'backups/' }}
 
     steps:

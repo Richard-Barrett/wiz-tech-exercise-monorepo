@@ -62,8 +62,8 @@ run_check "DB02" "MongoDB access restricted to Kubernetes-only network (SG allow
 # run_check "DB03" "MongoDB auth enabled (unauthenticated access denied)" \
 #   "bash scripts/validation/validate_mongo_auth_enabled.sh"
 
-# run_check "BK01" "Daily backups configured (cron or systemd timer inferred) + recent backup object exists" \
-#   "bash scripts/validation/validate_backups_present.sh"
+run_check "BK01" "Daily backups configured (cron or systemd timer inferred) + recent backup object exists" \
+  "bash scripts/validation/validate_backups_present.sh"
 
 # run_check "BK02" "Backup object storage allows public read + public listing" \
 #   "bash scripts/validation/validate_s3_public_read_list.sh"
