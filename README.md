@@ -5,6 +5,8 @@
 [![project-validation](https://github.com/Richard-Barrett/wiz-tech-exercise-monorepo/actions/workflows/project-validation.yml/badge.svg)](https://github.com/Richard-Barrett/wiz-tech-exercise-monorepo/actions/workflows/project-validation.yml)
 [![security-scans](https://github.com/Richard-Barrett/wiz-tech-exercise-monorepo/actions/workflows/security.yml/badge.svg)](https://github.com/Richard-Barrett/wiz-tech-exercise-monorepo/actions/workflows/security.yml)
 
+![image](https://github.com/Richard-Barrett/wiz-tech-exercise-monorepo/blob/main/aws_image.png)
+
 This repository contains a small end-to-end deployment that provisions infrastructure on AWS and deploys an application to Kubernetes.
 
 It includes:
