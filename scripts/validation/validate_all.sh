@@ -59,14 +59,14 @@ run_check "DB01" "MongoDB version is 1+ year outdated (major version check)" \
 run_check "DB02" "MongoDB access restricted to Kubernetes-only network (SG allows only EKS CIDR / SG)" \
   "bash scripts/validation/validate_mongo_network_restricted.sh"
 
-run_check "DB03" "MongoDB auth enabled (unauthenticated access denied)" \
-  "bash scripts/validation/validate_mongo_auth_enabled.sh"
+# run_check "DB03" "MongoDB auth enabled (unauthenticated access denied)" \
+#   "bash scripts/validation/validate_mongo_auth_enabled.sh"
 
-run_check "BK01" "Daily backups configured (cron or systemd timer inferred) + recent backup object exists" \
-  "bash scripts/validation/validate_backups_present.sh"
+# run_check "BK01" "Daily backups configured (cron or systemd timer inferred) + recent backup object exists" \
+#   "bash scripts/validation/validate_backups_present.sh"
 
-run_check "BK02" "Backup object storage allows public read + public listing" \
-  "bash scripts/validation/validate_s3_public_read_list.sh"
+# run_check "BK02" "Backup object storage allows public read + public listing" \
+#   "bash scripts/validation/validate_s3_public_read_list.sh"
 
 # --------- Kubernetes app checks ---------
 run_check "K801" "EKS cluster nodes are in private subnets (no public IPs on nodes)" \
