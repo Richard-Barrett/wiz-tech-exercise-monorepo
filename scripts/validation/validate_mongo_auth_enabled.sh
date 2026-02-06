@@ -18,88 +18,90 @@ if [[ -z "${iid:-}" || "$iid" == "None" ]]; then
 fi
 log "Mongo InstanceId: $iid"
 
-# --- SSM sanity check (super common reason for “instant failures”) ---
-ssm_online=$(aws ssm describe-instance-information \
+ping=$(aws ssm describe-instance-information \
   --region "$AWS_REGION" \
   --filters "Key=InstanceIds,Values=$iid" \
   --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null || true)
 
-if [[ -z "${ssm_online:-}" || "$ssm_online" == "None" ]]; then
-  log "FAIL: Instance is not registered in SSM."
-  log "Fix: install/enable SSM agent + attach instance profile with AmazonSSMManagedInstanceCore."
+if [[ -z "${ping:-}" || "$ping" == "None" ]]; then
+  log "FAIL: Instance not registered in SSM (cannot run remote validation)."
   exit 1
 fi
-
-if [[ "$ssm_online" != "Online" ]]; then
-  log "FAIL: SSM PingStatus is '$ssm_online' (expected Online)."
+if [[ "$ping" != "Online" ]]; then
+  log "FAIL: SSM PingStatus=$ping (expected Online)"
   exit 1
 fi
-log "SSM PingStatus: $ssm_online"
+log "SSM PingStatus: $ping"
 
-# Run local unauth probe on the VM:
-# 1) confirm mongod.conf has authorization enabled
-# 2) attempt admin command that should require auth (usersInfo)
 cmd_id=$(aws ssm send-command \
   --region "$AWS_REGION" \
   --instance-ids "$iid" \
   --document-name "AWS-RunShellScript" \
-  --comment "Check MongoDB authorization is enabled and unauth access is denied" \
+  --comment "Validate MongoDB authorization enabled + unauth access denied" \
   --parameters commands='
 set -euo pipefail
 
-echo "--- mongod.conf security section ---"
+echo "=== mongod status ==="
+systemctl is-active mongod || (systemctl status mongod --no-pager || true; exit 1)
+
+echo "=== listening ports ==="
+(ss -lntp || netstat -lntp) 2>/dev/null | grep -E ":(27017)\b" || true
+
+echo "=== /etc/mongod.conf security section ==="
 awk "BEGIN{p=0} /^security:/{p=1} p==1{print} /^$/{if(p==1) exit}" /etc/mongod.conf || true
 
 if ! grep -Eq "^[[:space:]]*authorization:[[:space:]]*enabled" /etc/mongod.conf; then
-  echo "authorization: enabled not found in /etc/mongod.conf"
+  echo "authorization: enabled NOT found in /etc/mongod.conf"
   exit 1
 fi
 
+CLI=""
 if command -v mongosh >/dev/null 2>&1; then
-  CLI=mongosh
+  CLI="mongosh"
+elif command -v mongo >/dev/null 2>&1; then
+  CLI="mongo"
 else
-  CLI=mongo
+  echo "Neither mongosh nor mongo is installed/available in PATH"
+  exit 1
 fi
 
-echo "--- attempting unauth admin command (usersInfo) ---"
-OUT=$($CLI --quiet --eval "db.getSiblingDB(\"admin\").runCommand({ usersInfo: 1 })" 2>&1 || true)
-echo "$OUT"
+echo "=== trying unauth commands (should be denied) using $CLI ==="
 
-# Pass if we see an auth-related failure
-echo "$OUT" | grep -Eqi "(not authorized|Unauthorized|requires authentication|Authentication failed)" && exit 0
+try_cmd () {
+  local js="$1"
+  echo "--- JS: $js"
+  OUT=$($CLI --quiet --eval "$js" 2>&1 || true)
+  echo "$OUT"
+  echo "$OUT" | grep -Eqi "(not authorized|Unauthorized|requires authentication|Authentication failed|auth.*failed)" && return 0
+  return 1
+}
 
-echo "Did not detect auth rejection. Mongo may allow unauth admin commands (auth disabled or misconfigured)."
+# Try a few commands that should require auth when authorization is enabled
+try_cmd "db.getSiblingDB(\"admin\").runCommand({ usersInfo: 1 })" && exit 0
+try_cmd "db.getSiblingDB(\"admin\").getUsers()" && exit 0
+try_cmd "db.getSiblingDB(\"admin\").runCommand({ getLog: \"global\" })" && exit 0
+
+echo "No auth-denial detected. This usually means authorization is NOT enforced at runtime."
 exit 1
 ' \
   --query 'Command.CommandId' --output text)
 
-# Wait + print details on failure
+# wait
 for _ in $(seq 1 30); do
-  status=$(aws ssm get-command-invocation \
-    --region "$AWS_REGION" \
-    --command-id "$cmd_id" \
-    --instance-id "$iid" \
-    --query 'Status' --output text 2>/dev/null || true)
-
-  case "$status" in
-    Success|Failed|TimedOut|Cancelled) break ;;
-    *) sleep 5 ;;
-  esac
+  st=$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$cmd_id" --instance-id "$iid" --query 'Status' --output text 2>/dev/null || true)
+  case "$st" in Success|Failed|TimedOut|Cancelled) break ;; *) sleep 3 ;; esac
 done
 
-inv=$(aws ssm get-command-invocation \
-  --region "$AWS_REGION" --command-id "$cmd_id" --instance-id "$iid" \
-  --output json)
-
+inv=$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$cmd_id" --instance-id "$iid" --output json)
 rc=$(jq -r '.ResponseCode' <<<"$inv")
-status=$(jq -r '.Status' <<<"$inv")
+st=$(jq -r '.Status' <<<"$inv")
 
 if [[ "$rc" == "0" ]]; then
   log "PASS: MongoDB auth enabled (unauthenticated access denied)."
   exit 0
 fi
 
-log "FAIL: MongoDB auth check failed. SSM Status=$status ResponseCode=$rc"
+log "FAIL: Mongo auth check failed (SSM Status=$st, RC=$rc)"
 log "STDOUT:"
 jq -r '.StandardOutputContent' <<<"$inv" || true
 log "STDERR:"

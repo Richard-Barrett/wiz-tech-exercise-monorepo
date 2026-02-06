@@ -9,7 +9,7 @@ log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
 : "${BACKUPS_BUCKET:?}"
 : "${BACKUPS_PREFIX:?}"
 
-RUN_BACKUP_NOW="${RUN_BACKUP_NOW:-false}"   # set true in workflow env if you want
+RUN_BACKUP_NOW="${RUN_BACKUP_NOW:-false}"
 
 iid=$(aws ec2 describe-instances \
   --region "$AWS_REGION" \
@@ -22,74 +22,67 @@ if [[ -z "${iid:-}" || "$iid" == "None" ]]; then
 fi
 log "Mongo InstanceId: $iid"
 
-ssm_online=$(aws ssm describe-instance-information \
+ping=$(aws ssm describe-instance-information \
   --region "$AWS_REGION" \
   --filters "Key=InstanceIds,Values=$iid" \
   --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null || true)
 
-if [[ -z "${ssm_online:-}" || "$ssm_online" == "None" ]]; then
-  log "FAIL: Instance is not registered in SSM."
-  log "Fix: install/enable SSM agent + attach instance profile with AmazonSSMManagedInstanceCore."
+if [[ -z "${ping:-}" || "$ping" == "None" ]]; then
+  log "FAIL: Instance not registered in SSM (cannot inspect cron or run backup)."
   exit 1
 fi
-if [[ "$ssm_online" != "Online" ]]; then
-  log "FAIL: SSM PingStatus is '$ssm_online' (expected Online)."
+if [[ "$ping" != "Online" ]]; then
+  log "FAIL: SSM PingStatus=$ping (expected Online)"
   exit 1
 fi
-log "SSM PingStatus: $ssm_online"
+log "SSM PingStatus: $ping"
 
 cmds='
 set -euo pipefail
+set -x
 
-echo "--- checking backup script + cron ---"
+echo "=== cron + script ==="
 ls -l /usr/local/bin/mongo_backup_to_s3.sh || true
 ls -l /etc/cron.d/mongo_backup || true
 
 if [[ ! -x /usr/local/bin/mongo_backup_to_s3.sh ]]; then
-  echo "Backup script missing or not executable: /usr/local/bin/mongo_backup_to_s3.sh"
+  echo "Backup script missing or not executable"
   exit 1
 fi
 
 if [[ ! -f /etc/cron.d/mongo_backup ]]; then
-  echo "Cron file missing: /etc/cron.d/mongo_backup"
+  echo "Cron file missing"
   exit 1
 fi
 
-grep -n "mongo_backup_to_s3.sh" /etc/cron.d/mongo_backup || true
+echo "=== cron contents ==="
+cat /etc/cron.d/mongo_backup
 '
 
 if [[ "$RUN_BACKUP_NOW" == "true" ]]; then
-  cmds+=$'\n'"echo \"--- RUN_BACKUP_NOW=true: executing backup once ---\""
-  cmds+=$'\n'"sudo /usr/local/bin/mongo_backup_to_s3.sh || (echo \"Backup script failed\"; exit 1)"
+  cmds+=$'\n'"echo '=== RUN_BACKUP_NOW=true: running backup once ==='"
+  cmds+=$'\n'"/usr/local/bin/mongo_backup_to_s3.sh"
 fi
 
 cmd_id=$(aws ssm send-command \
   --region "$AWS_REGION" \
   --instance-ids "$iid" \
   --document-name "AWS-RunShellScript" \
-  --comment "Check backup cron/script and optionally execute backup" \
+  --comment "Validate backup config and optionally run backup now" \
   --parameters commands="$cmds" \
   --query 'Command.CommandId' --output text)
 
 for _ in $(seq 1 30); do
-  status=$(aws ssm get-command-invocation \
-    --region "$AWS_REGION" --command-id "$cmd_id" --instance-id "$iid" \
-    --query 'Status' --output text 2>/dev/null || true)
-  case "$status" in
-    Success|Failed|TimedOut|Cancelled) break ;;
-    *) sleep 5 ;;
-  esac
+  st=$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$cmd_id" --instance-id "$iid" --query 'Status' --output text 2>/dev/null || true)
+  case "$st" in Success|Failed|TimedOut|Cancelled) break ;; *) sleep 3 ;; esac
 done
 
-inv=$(aws ssm get-command-invocation \
-  --region "$AWS_REGION" --command-id "$cmd_id" --instance-id "$iid" \
-  --output json)
-
+inv=$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$cmd_id" --instance-id "$iid" --output json)
 rc=$(jq -r '.ResponseCode' <<<"$inv")
-status=$(jq -r '.Status' <<<"$inv")
+st=$(jq -r '.Status' <<<"$inv")
 
 if [[ "$rc" != "0" ]]; then
-  log "FAIL: Backup scheduling/config check failed. SSM Status=$status ResponseCode=$rc"
+  log "FAIL: Backup config/run failed (SSM Status=$st, RC=$rc)"
   log "STDOUT:"
   jq -r '.StandardOutputContent' <<<"$inv" || true
   log "STDERR:"
@@ -97,25 +90,20 @@ if [[ "$rc" != "0" ]]; then
   exit 1
 fi
 
-log "Backup script + cron look configured."
+log "Backup cron/script verified on VM."
 
-log "Checking S3 for backup objects: s3://$BACKUPS_BUCKET/$BACKUPS_PREFIX"
+log "Checking for objects in s3://$BACKUPS_BUCKET/$BACKUPS_PREFIX"
 count=$(aws s3api list-objects-v2 \
   --region "$AWS_REGION" \
   --bucket "$BACKUPS_BUCKET" \
   --prefix "$BACKUPS_PREFIX" \
   --query 'length(Contents)' --output text 2>/dev/null || echo "0")
 
-if [[ "$count" == "None" ]]; then
-  count="0"
-fi
+[[ "$count" == "None" ]] && count="0"
 
 if (( count < 1 )); then
-  log "FAIL: No objects found under s3://$BACKUPS_BUCKET/$BACKUPS_PREFIX"
-  log "Most common causes:"
-  log " - Backup cron hasn't run yet (set RUN_BACKUP_NOW=true to force one)."
-  log " - VM role lacks s3:PutObject to this bucket/prefix."
-  log " - BACKUPS_BUCKET/BACKUPS_PREFIX are not the backup destination."
+  log "FAIL: No backup objects found under s3://$BACKUPS_BUCKET/$BACKUPS_PREFIX"
+  log "If cron hasn't run yet, set RUN_BACKUP_NOW=true in workflow env."
   exit 1
 fi
 
@@ -128,4 +116,3 @@ latest=$(aws s3api list-objects-v2 \
 
 log "PASS: Found $count object(s). Latest:"
 echo "$latest" | jq .
-exit 0
