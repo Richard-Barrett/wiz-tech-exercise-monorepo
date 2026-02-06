@@ -34,7 +34,7 @@ on:
       mongo_instance_tag_value:
         description: "EC2 tag value to locate Mongo VM (ex: wizex-mongo)"
         required: true
-        default: "wizex-mongo"
+        default: "wizex-mongo-vm"
       mongo_port:
         description: "MongoDB port"
         required: false
