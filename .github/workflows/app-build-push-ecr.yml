@@ -89,7 +89,7 @@ jobs:
 
       # Optional: scan the image before you deploy (good interview bonus)
       - name: Trivy image scan (CRITICAL)
-        uses: aquasecurity/trivy-action@0.32.0
+        uses: aquasecurity/trivy-action@0.33.1
         with:
           image-ref: ${{ steps.image.outputs.image_uri }}
           format: "table"
