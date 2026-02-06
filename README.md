@@ -1,5 +1,9 @@
 # Wiz Tech Exercise Monorepo
 
+[![app-build-push-ecr](https://github.com/Richard-Barrett/wiz-tech-exercise-monorepo/actions/workflows/app-build-push-ecr.yml/badge.svg)](https://github.com/Richard-Barrett/wiz-tech-exercise-monorepo/actions/workflows/app-build-push-ecr.yml)
+[![infra-deploy](https://github.com/Richard-Barrett/wiz-tech-exercise-monorepo/actions/workflows/infra-deploy.yml/badge.svg)](https://github.com/Richard-Barrett/wiz-tech-exercise-monorepo/actions/workflows/infra-deploy.yml)
+[![security-scans](https://github.com/Richard-Barrett/wiz-tech-exercise-monorepo/actions/workflows/security.yml/badge.svg)](https://github.com/Richard-Barrett/wiz-tech-exercise-monorepo/actions/workflows/security.yml)
+
 This repository contains a small end-to-end deployment that provisions infrastructure on AWS and deploys an application to Kubernetes.
 
 It includes:
@@ -74,7 +78,7 @@ Expected output includes your name (e.g., `Richard Barrett`).
 ## Wiki
 
 A full GitHub Wiki page set is provided in the `wiki/` folder of the downloadable artifact from ChatGPT.
-Copy those files into your repo Wiki (`[https://github.com/Richard-Barrett/wiz-tech-exercise-monorepo.wiki.git](https://github.com/Richard-Barrett/wiz-tech-exercise-monorepo/wiki)`) to publish them.
+Copy those files into your repo Wiki [Wiki](https://github.com/Richard-Barrett/wiz-tech-exercise-monorepo/wiki) to publish them.
 
 ---
 
