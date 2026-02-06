@@ -2,6 +2,7 @@
 
 [![app-build-push-ecr](https://github.com/Richard-Barrett/wiz-tech-exercise-monorepo/actions/workflows/app-build-push-ecr.yml/badge.svg)](https://github.com/Richard-Barrett/wiz-tech-exercise-monorepo/actions/workflows/app-build-push-ecr.yml)
 [![infra-deploy](https://github.com/Richard-Barrett/wiz-tech-exercise-monorepo/actions/workflows/infra-deploy.yml/badge.svg)](https://github.com/Richard-Barrett/wiz-tech-exercise-monorepo/actions/workflows/infra-deploy.yml)
+[![project-validation](https://github.com/Richard-Barrett/wiz-tech-exercise-monorepo/actions/workflows/project-validation.yml/badge.svg)](https://github.com/Richard-Barrett/wiz-tech-exercise-monorepo/actions/workflows/project-validation.yml)
 [![security-scans](https://github.com/Richard-Barrett/wiz-tech-exercise-monorepo/actions/workflows/security.yml/badge.svg)](https://github.com/Richard-Barrett/wiz-tech-exercise-monorepo/actions/workflows/security.yml)
 
 This repository contains a small end-to-end deployment that provisions infrastructure on AWS and deploys an application to Kubernetes.
