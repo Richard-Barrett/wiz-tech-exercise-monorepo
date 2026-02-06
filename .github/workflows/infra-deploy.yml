@@ -63,6 +63,8 @@ jobs:
       TF_VAR_your_name: ${{ github.event.inputs.your_name || 'Richard Barrett' }}
       TF_VAR_ssh_allowed_cidr: ${{ github.event.inputs.ssh_allowed_cidr || '0.0.0.0/0' }}
       TF_VAR_enable_overly_permissive_ec2_role: ${{ github.event.inputs.enable_overly_permissive_ec2_role || 'true' }}
+      TF_VAR_eks_admin_principal_arn: ${{ secrets.EKS_ADMIN_PRINCIPAL_ARN }}
+      TF_VAR_app_image_uri: ${{ secrets.APP_IMAGE_URI }}
 
       # Required path var: we generate this key during the job
       TF_VAR_public_key_path: /tmp/wizexercise_id_rsa.pub
