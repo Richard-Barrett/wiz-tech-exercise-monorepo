@@ -32,7 +32,7 @@ on:
         required: true
         default: "Name"
       mongo_instance_tag_value:
-        description: "EC2 tag value to locate Mongo VM (ex: wizex-mongo)"
+        description: "EC2 tag value to locate Mongo VM (ex: wizex-mongo-vm)"
         required: true
         default: "wizex-mongo-vm"
       mongo_port:
@@ -40,13 +40,14 @@ on:
         required: false
         default: "27017"
       backups_bucket:
-        description: "S3 bucket holding backups"
+        description: "S3 bucket holding backups (NOT your TF state bucket unless intentional)"
         required: true
         default: "wiz-tech-terraform-state"
       backups_prefix:
         description: "Prefix under bucket where backups land"
         required: false
         default: "backups/"
+
   push:
     branches: ["main"]
     paths:
@@ -61,18 +62,26 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-22.04
+
+    # IMPORTANT:
+    # - github.event.inputs.* only exists for workflow_dispatch
+    # - for push runs, these become the hard defaults below
     env:
-      AWS_REGION: ${{ inputs.aws_region || 'us-east-1' }}
-      EKS_CLUSTER_NAME: ${{ inputs.eks_cluster_name || 'wizex-eks' }}
-      K8S_NAMESPACE: ${{ inputs.k8s_namespace || 'wizapp' }}
-      APP_DEPLOYMENT_NAME: ${{ inputs.app_deployment_name || 'wizapp' }}
-      APP_CONTAINER_NAME: ${{ inputs.app_container_name || 'wizapp' }}
-      EXPECTED_NAME: ${{ inputs.expected_name_in_wizexercise || 'Richard Barrett' }}
-      MONGO_TAG_KEY: ${{ inputs.mongo_instance_tag_key || 'Name' }}
-      MONGO_TAG_VALUE: ${{ inputs.mongo_instance_tag_value || 'wizex-mongo' }}
-      MONGO_PORT: ${{ inputs.mongo_port || '27017' }}
-      BACKUPS_BUCKET: ${{ inputs.backups_bucket }}
-      BACKUPS_PREFIX: ${{ inputs.backups_prefix || 'backups/' }}
+      AWS_REGION: ${{ github.event.inputs.aws_region || 'us-east-1' }}
+      EKS_CLUSTER_NAME: ${{ github.event.inputs.eks_cluster_name || 'wizex-eks' }}
+      K8S_NAMESPACE: ${{ github.event.inputs.k8s_namespace || 'wizapp' }}
+      APP_DEPLOYMENT_NAME: ${{ github.event.inputs.app_deployment_name || 'wizapp' }}
+      APP_CONTAINER_NAME: ${{ github.event.inputs.app_container_name || 'wizapp' }}
+      EXPECTED_NAME: ${{ github.event.inputs.expected_name_in_wizexercise || 'Richard Barrett' }}
+
+      MONGO_TAG_KEY: ${{ github.event.inputs.mongo_instance_tag_key || 'Name' }}
+      # FIXED: fallback MUST match your real tag value (wizex-mongo-vm)
+      MONGO_TAG_VALUE: ${{ github.event.inputs.mongo_instance_tag_value || 'wizex-mongo-vm' }}
+      MONGO_PORT: ${{ github.event.inputs.mongo_port || '27017' }}
+
+      # FIXED: don't leave this blank on push runs
+      BACKUPS_BUCKET: ${{ github.event.inputs.backups_bucket || 'wiz-tech-terraform-state' }}
+      BACKUPS_PREFIX: ${{ github.event.inputs.backups_prefix || 'backups/' }}
 
     steps:
       - name: Checkout
@@ -92,7 +101,7 @@ jobs:
         run: |
           sudo apt-get update -y
           sudo apt-get install -y jq
-      
+
       - name: Setup kubectl
         uses: azure/setup-kubectl@v4
         with:
