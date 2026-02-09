@@ -29,7 +29,7 @@ jobs:
         run: |
           docker build -t wizapp:pr --build-arg YOUR_NAME="PR Scan" app
       - name: Trivy scan
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@0.33.1
         with:
           image-ref: "wizapp:pr"
           format: table
