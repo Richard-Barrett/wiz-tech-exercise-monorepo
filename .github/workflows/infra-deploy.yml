@@ -103,7 +103,7 @@ jobs:
       - name: Terraform fmt
         run: terraform fmt -check -recursive
 
-      - name: Terraform init
+      - name: Terraform init -upgrade
         run: terraform init -input=false
 
       - name: Terraform validate
