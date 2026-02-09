@@ -18,4 +18,10 @@ terraform {
       version = ">= 3.6"
     }
   }
+  backend "s3" {
+    bucket  = "wiz-tech-terraform-state"
+    key     = "wiz-tech-exercise/terraform.tfstate"
+    region  = "us-east-1"
+    encrypt = true
+  }
 }
