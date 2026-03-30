@@ -30,7 +30,7 @@ jobs:
           version: "v1.29.0"
 
       - name: Setup Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@v5
 
       - name: Login to ECR
         uses: aws-actions/amazon-ecr-login@v2
